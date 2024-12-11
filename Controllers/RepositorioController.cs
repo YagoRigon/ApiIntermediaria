@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -11,66 +12,85 @@ namespace ApiIntermediaria.Controllers
     public class RepositorioController : ControllerBase
     {
         private readonly HttpClient _httpClient;
+        private readonly string _externalApiUrl;
 
-        public RepositorioController(HttpClient httpClient)
+        // Construtor com injeção de dependência do HttpClient e IConfiguration
+        public RepositorioController(HttpClient httpClient, IConfiguration configuration)
         {
             _httpClient = httpClient;
+            _externalApiUrl = configuration["ApiSettings:ExternalApiUrl"]; // Obtém a URL da API externa
         }
 
-        // Endpoint para retornar os repositórios
+        /// <summary>
+        /// Endpoint para buscar e retornar os repositórios da API externa.
+        /// </summary>
         [HttpGet("repositorios")]
         public async Task<IActionResult> GetRepositorios()
         {
             try
             {
-                // URL da API externa
-                var apiUrl = "https://githubrepoapi-eecgh9g4fpesebet.brazilsouth-01.azurewebsites.net/api/Repositories/chsarp";
+                // Realiza a requisição à API externa e obtém a resposta em formato JSON
+                var response = await _httpClient.GetStringAsync(_externalApiUrl);
 
-                // Fazendo a requisição para a API externa
-                var response = await _httpClient.GetStringAsync(apiUrl);
-
-                // Verifica se a resposta é nula ou vazia
-                if (string.IsNullOrEmpty(response))
+                // Valida se a resposta está vazia ou nula
+                if (string.IsNullOrWhiteSpace(response))
                 {
                     return StatusCode(500, new { message = "A resposta da API externa está vazia." });
                 }
 
-                // Tentando deserializar a resposta
-                ApiResponse repositoriosResponse = null;
-                try
+                // Tenta deserializar o JSON da resposta para o modelo ApiResponse
+                if (!TryDeserializeResponse(response, out ApiResponse repositoriosResponse))
                 {
-                    repositoriosResponse = JsonConvert.DeserializeObject<ApiResponse>(response);
-                }
-                catch (JsonException jsonEx)
-                {
-                    return StatusCode(500, new { message = "Erro ao deserializar a resposta da API externa", error = jsonEx.Message });
+                    return StatusCode(500, new { message = "Erro ao deserializar a resposta da API externa." });
                 }
 
-                // Verifica se a lista de repositórios é nula ou vazia
-                if (repositoriosResponse?.Repositorios == null || repositoriosResponse.Repositorios.Count == 0)
+                // Valida se a lista de repositórios retornada está vazia ou nula
+                if (repositoriosResponse?.Repositorios == null || !repositoriosResponse.Repositorios.Any())
                 {
                     return NotFound(new { message = "Nenhum repositório encontrado." });
                 }
 
-                // Formata os dados dos repositórios
+                // Formata os dados dos repositórios para retorno
                 var repositoriosFormatados = repositoriosResponse.Repositorios
                     .Select(repo => new
                     {
-                        title = repo.Title,
-                        imageUrl = repo.ImageUrl,
-                        text = repo.Text
+                        repo.Title,
+                        repo.ImageUrl,
+                        repo.Text
                     }).ToList();
 
-                // Retorna os dados formatados
                 return Ok(new { repositorios = repositoriosFormatados });
+            }
+            catch (HttpRequestException httpEx)
+            {
+                // Erro específico relacionado à requisição HTTP
+                return StatusCode(500, new { message = "Erro ao acessar a API externa", error = httpEx.Message });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Erro ao acessar a API externa", error = ex.Message });
+                // Captura outros tipos de exceção
+                return StatusCode(500, new { message = "Erro interno ao processar a requisição", error = ex.Message });
             }
         }
 
-        // Modelo para mapear a resposta da API externa
+        /// <summary>
+        /// Tenta deserializar o JSON da resposta para o modelo ApiResponse.
+        /// </summary>
+        private bool TryDeserializeResponse(string jsonResponse, out ApiResponse apiResponse)
+        {
+            try
+            {
+                apiResponse = JsonConvert.DeserializeObject<ApiResponse>(jsonResponse);
+                return true;
+            }
+            catch (JsonException)
+            {
+                apiResponse = null;
+                return false;
+            }
+        }
+
+        // Modelo para mapear a resposta de um repositório
         public class Repositorio
         {
             public string Title { get; set; }
@@ -78,6 +98,7 @@ namespace ApiIntermediaria.Controllers
             public string Text { get; set; }
         }
 
+        // Modelo para mapear a resposta completa da API externa
         public class ApiResponse
         {
             [JsonProperty("items")]
